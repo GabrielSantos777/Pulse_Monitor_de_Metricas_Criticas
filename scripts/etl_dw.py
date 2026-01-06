@@ -1,6 +1,6 @@
 from dotenv import load_dotenv, find_dotenv
 import pandas as pd
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from faker import Faker
 import random
 from datetime import datetime, timedelta
@@ -22,10 +22,11 @@ engine = create_engine(DATABASE_URI)
 fake = Faker('pt-br')
 
 
-def popular_dim_tempo(anos=2):
+def popular_dim_tempo():
+    print("Gerando Dimensão Tempo...")
     datas = []
     data_inicio = datetime(2023, 1, 1)
-    for i in range(anos * 365):
+    for i in range(730): # 2 anos
         dt = data_inicio + timedelta(days=i)
         datas.append({
             'data_completa': dt,
@@ -36,10 +37,11 @@ def popular_dim_tempo(anos=2):
             'dia_semana': dt.strftime('%A'),
             'final_semana': dt.weekday() >= 5
         })
-    df_tempo = pd.DataFrame(datas)
-    df_tempo.to_sql('dim_tempo', engine, if_exists='append', index=False)
+    df = pd.DataFrame(datas)
+    df.to_sql('dim_tempo', engine, if_exists='append', index=False)
     
 def popular_dim_planos():
+    print("Gerando Dimensão Planos...")
     planos = [
         {'nome_plano': 'Basic', 'valor_mensal': 99.00, 'limite_usuarios': 5},
         {'nome_plano': 'Pro', 'valor_mensal': 299.00, 'limite_usuarios': 20},
@@ -47,42 +49,44 @@ def popular_dim_planos():
     ]
     pd.DataFrame(planos).to_sql('dim_planos', engine, if_exists='append', index=False)
 
-def popular_dim_clientes(n=500):
+def popular_dim_clientes(n=100):
+    print(f"Gerando {n} Clientes...")
     clientes = []
-    segmentos = ['Tecnologia', 'Educação', 'Saúde', 'Varejo', 'Finanças']
     for _ in range(n):
         clientes.append({
             'id_natural_cliente': fake.uuid4(),
             'nome_cliente': fake.name(),
             'email_cliente': fake.email(),
             'empresa_cliente': fake.company(),
-            'segmento_empresa': random.choice(segmentos),
+            'segmento_empresa': random.choice(['Tech', 'Saúde', 'Varejo']),
             'pais': 'Brasil'
         })
-    pd.DataFrame(clientes).to_sql('dim_clientes', engine, if_exists='append', index=False)
+    df = pd.DataFrame(clientes)
+    df.to_sql('dim_clientes', engine, if_exists='append', index=False, method='multi')
 
-def popular_fato_assinaturas(n_vendas=2000):
-
-    sk_clientes = pd.read_sql('SELECT "sk_cliente" FROM dim_clientes', engine)['sk_cliente'].tolist()
-    sk_planos =pd.read_sql("SELECT sk_plano, valor_mensal FROM dim_planos", engine).to_dict('records')
-    sk_datas = pd.read_sql("SELECT sk_tempo FROM dim_tempo", engine)['sk_tempo'].tolist()
+def popular_fato_assinaturas(n_vendas=500):
+    print(f"Gerando {n_vendas} Assinaturas...")
     
-    assinaturas = []
-    for _ in range(n_vendas):
-        plano_sorteado = random.choice(sk_planos)
-        assinaturas.append({
-            'fk_cliente': random.choice(sk_clientes),
-            'fk_planos': plano_sorteado['sk_plano'],
-            'fk_data_inicio': random.choice(sk_datas),
-            'valor_contrato': plano_sorteado['valor_mensal'] * random.randint(1, 12),
-            'status_assinatura': random.choice(['Ativa', 'Ativa', 'Ativa', 'Cancelada'])
-        })
-    pd.DataFrame(assinaturas).to_sql('fato_assinaturas', engine, if_exists='append', index=False)
+    with engine.connect() as conn:
+        check_cols = conn.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name = 'dim_clientes'"))
+        colunas_reais = [row[0] for row in check_cols]
+        print(f"DEBUG: Colunas encontradas no banco para 'dim_clientes': {colunas_reais}")
+        
+        if 'sk_cliente' not in colunas_reais:
+            print("ERRO CRÍTICO: A coluna sk_cliente realmente não existe no banco de dados!")
+            return
+
+        sk_clientes = [row[0] for row in conn.execute(text("SELECT sk_cliente FROM dim_clientes")).fetchall()]
+        sk_planos = [dict(row._mapping) for row in conn.execute(text("SELECT sk_plano, valor_mensal FROM dim_planos")).fetchall()]
+        sk_datas = [row[0] for row in conn.execute(text("SELECT sk_tempo FROM dim_tempo")).fetchall()]
     
 if __name__ == "__main__":
-    popular_dim_tempo()
-    popular_dim_planos()
-    popular_dim_clientes()
-    popular_fato_assinaturas()
-    print("\n Data Warehouse populado com sucesso!")
+    try:
+        popular_dim_tempo()
+        popular_dim_planos()
+        popular_dim_clientes()
+        popular_fato_assinaturas()
+        print("\nSucesso total!")
+    except Exception as e:
+        print(f"\nErro durante a execução: {e}")
   
